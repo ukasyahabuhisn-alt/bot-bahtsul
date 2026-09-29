@@ -1,7 +1,17 @@
-// UPDATE NODE 20 FIX - BAHTSUL V3
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys')
-const axios = require('axios')
-const pino = require('pino')
+// UPDATE NODE 20 FIX - BAHTSUL V3 - FULL FIXED
+const fs = require('fs');
+const axios = require('axios');
+const pino = require('pino');
+
+// FIX BAILEYS V6 ESM
+let makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion;
+async function loadBaileys() {
+    const baileys = await import('@whiskeysockets/baileys');
+    makeWASocket = baileys.default;
+    useMultiFileAuthState = baileys.useMultiFileAuthState;
+    DisconnectReason = baileys.DisconnectReason;
+    fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion;
+}
 
 // ================== PROMPT PENELITI SYARIAH ==================
 const SYSTEM_PROMPT = `
@@ -32,7 +42,7 @@ Gaya: Ilmiah, lugas, tegas, mudah dipahami, Arab berharakat.
 async function tanyaAI(pertanyaanUser) {
   try {
     const OPENAI_KEY = process.env.OPENAI_API_KEY
-    if (!OPENAI_KEY) return null // kalau tidak ada key, pakai mode manual
+    if (!OPENAI_KEY) return null
    
     let res = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: "gpt-4o-mini",
@@ -51,17 +61,20 @@ async function tanyaAI(pertanyaanUser) {
 }
 
 async function startBot() {
+    await loadBaileys(); // WAJIB - Fix Node 20
+    const { version } = await fetchLatestBaileysVersion();
     const { state, saveCreds } = await useMultiFileAuthState('auth_info')
-    // Ambil session dari ENV kalau ada (biar tidak pairing ulang)
+   
     if (process.env.SESSION_DATA) {
-        try {
-            const sess = JSON.parse(process.env.SESSION_DATA)
-            // Simpan ke file auth_info/creds.json secara manual sudah di-handle Render
-            console.log("SESSION_DATA ditemukan")
-        } catch {}
+        console.log("SESSION_DATA ditemukan di ENV");
     }
    
-    const sock = makeWASocket({ auth: state, logger: pino({ level: 'silent' }) })
+    const sock = makeWASocket({
+        version,
+        auth: state,
+        logger: pino({ level: 'silent' }),
+        browser: ['Bahtsul Masail', 'Chrome', '1.0.0']
+    })
     sock.ev.on('creds.update', saveCreds)
 
     sock.ev.on('connection.update', (u) => {
@@ -78,7 +91,6 @@ async function startBot() {
 
         console.log("Pertanyaan:", text)
        
-        // Coba jawab pakai AI model Bahtsul Masail
         let jawabanAI = await tanyaAI(`
 📌 DESKRIPSI MASALAH: ${text}
 ❓ PERTANYAAN: ${text}
@@ -89,7 +101,6 @@ Jawab dengan 9 struktur lengkap di atas.
         if (jawabanAI) {
             jawabFinal = jawabanAI
         } else {
-            // Fallback kalau belum ada OPENAI_API_KEY - mode manual
             jawabFinal = `*Mode Manual Aktif (Belum ada OPENAI_API_KEY)*
 
 Ustadz, untuk mengaktifkan mode Peneliti Syariah super lengkap seperti template Ustadz, tambahkan di Render > Environment:
@@ -108,7 +119,6 @@ Bot akan menjawab dengan metode Bahtsul Masail lengkap setelah API Key dipasang.
 Silakan pasang API Key dulu Ustadz.`
         }
 
-        // Potong pesan WA max 4000 karakter per bubble
         if (jawabFinal.length > 4000) {
             for (let i = 0; i < jawabFinal.length; i += 4000) {
                 await sock.sendMessage(from, { text: jawabFinal.substring(i, i+4000) })
