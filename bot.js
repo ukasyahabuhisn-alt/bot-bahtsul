@@ -1,3 +1,4 @@
+// UPDATE NODE 20 FIX - BAHTSUL V3
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys')
 const axios = require('axios')
 const pino = require('pino')
