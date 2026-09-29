@@ -30,7 +30,7 @@ ATURAN IBARAT KITAB:
 📖 قال الإمام [اسم] رحمه الله:
 «النص العربي الأصلي...»
 Terjemahan: "..."
-Penjelasan: ...
+Penjelasan:...
 
 Gaya: Ilmiah, lugas, tegas, mudah dipahami, Arab berharakat.
 `;
@@ -48,7 +48,7 @@ async function tanyaAI(pertanyaanUser) {
   try {
     const OPENAI_KEY = process.env.OPENAI_API_KEY
     if (!OPENAI_KEY) return null
-   
+
     let res = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: "gpt-4o-mini",
       messages: [
@@ -57,7 +57,7 @@ async function tanyaAI(pertanyaanUser) {
       ],
       temperature: 0.3
     }, { headers: { Authorization: `Bearer ${OPENAI_KEY}` } })
-   
+
     return res.data.choices[0].message.content
   } catch (e) {
     console.log("AI Error:", e.response?.data || e.message)
@@ -74,7 +74,6 @@ async function startBot() {
             console.log("SESSION_DATA ditemukan di ENV");
             const sessionDir = './auth_info';
             if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
-            // Support 2 format: base64 JSON dan JSON langsung
             let sessRaw = process.env.SESSION_DATA;
             try {
                 const decoded = Buffer.from(sessRaw, 'base64').toString();
@@ -83,20 +82,44 @@ async function startBot() {
                     fs.writeFileSync(`${sessionDir}/${file}`, JSON.stringify(sessionData[file]));
                 }
             } catch {
-                // kalau bukan base64, coba parse langsung (format lama)
                 console.log("SESSION_DATA format lama, skip restore file");
             }
         } catch (e) { console.log("Gagal restore session", e.message) }
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('auth_info')
-    const sock = makeWASocket({ auth: state, logger: pino({ level: 'silent' }) })
+    const sock = makeWASocket({
+        auth: state,
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: false,
+        browser: ['Bahtsul V3','Chrome','1.0']
+    })
     sock.ev.on('creds.update', saveCreds)
 
+    // ====== GANTI QR JADI ANGKA PAIRING CODE ======
+    if (!sock.authState.creds.registered) {
+        const phoneNumber = (process.env.PHONE_NUMBER || '').replace(/[^0-9]/g,'')
+        if (phoneNumber) {
+            setTimeout(async () => {
+                try {
+                    const code = await sock.requestPairingCode(phoneNumber)
+                    console.log(`\n========================================`)
+                    console.log(`PAIRING CODE: ${code}`)
+                    console.log(`UNTUK NOMOR: ${phoneNumber}`)
+                    console.log(`========================================`)
+                    console.log(`WA > Perangkat Tertaut > Tautkan > Tautkan dgn nomor telepon > masukkan ${code}\n`)
+                } catch (e) {
+                    console.log('Gagal minta pairing code:', e.message)
+                }
+            }, 3000)
+        } else {
+            console.log('SET ENV PHONE_NUMBER DULU! Contoh: 6281234567890')
+        }
+    }
+
     sock.ev.on('connection.update', (u) => {
-        if (u.qr) console.log("QR muncul, scan jika belum konek");
         if (u.connection === 'open') console.log('BOT KONEK - BAHTSUL MASAIL V3 READY');
-        if (u.connection === 'close' && u.lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
+        if (u.connection === 'close' && u.lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut) {
             console.log("Reconnecting...");
             startBot();
         }
@@ -110,7 +133,7 @@ async function startBot() {
         if (!text) return
 
         console.log("Pertanyaan:", text)
-       
+
         let jawabanAI = await tanyaAI(`
 📌 DESKRIPSI MASALAH: ${text}
 ❓ PERTANYAAN: ${text}
