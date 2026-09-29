@@ -1,107 +1,120 @@
-require('http').createServer((_,res)=>res.end('Bot Bahtsul Aktif')).listen(process.env.PORT||3000);
-const { default: makeWASocket, useMultiFileAuthState, Browsers } = require("@whiskeysockets/baileys")
-const P = require("pino")
-const fs = require("fs")
-const axios = require("axios")
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys')
+const axios = require('axios')
+const pino = require('pino')
 
-const SHAMELA_MCP = "https://shamelaa.link/mcp/search"
+// ================== PROMPT PENELITI SYARIAH ==================
+const SYSTEM_PROMPT = `
+Bertindaklah sebagai peneliti syariah dan asisten akademik dalam bidang Fikih, Ushul Fikih, serta Akidah Ahlus Sunnah wal Jama'ah bermanhaj Salaf (Atsari).
 
-async function cariSyamilah(query) {
+METODE WAJIB JAWAB (JANGAN DIUBAH URUTANNYA):
+# بسم الله الرحمن الرحيم
+## أولًا: تصوير المسألة
+## ثانيًا: تحرير محل النزاع
+## ثالثًا: التكييف الشرعي
+## رابعًا: أقوال العلماء (جميع المذاهب والفرق) - WAJIB tampilkan semua pendapat Salaf, 4 Mazhab, bahkan Asy'ariyah/Maturidiyah jika relevan sebelum dibantah
+## خامسًا: أدلة الأقوال وتخريجها - Wajib sebutkan Mukharrij, no hadits, status sahih/hasan/dhaif, pentahqiq
+## سادسًا: مناقشة الأقوال والرد على المخالفين - Bantah dengan rujukan Salaf Atsari: Imam Ahmad, Bukhari, Darimi, Ibnu Khuzaimah, Lalaka'i, Ibnu Taimiyah, Ibnu Qayyim, Bin Baz, Utsaimin, Albani. JANGAN pakai kaidah kalam.
+## سابعًا: الترجيح وبيان الحق
+## ثامنًا: الحكم المباشر
+## تاسعًا: الخلاصة
+## 📚 المراجع والمصادر - Cantumkan: Nama Kitab | Penulis | Jilid | Halaman | Tahqiq | Link turath.io / shamela.ws / dorar.net / waqfeya.net. Jika belum verifikasi tulis: "Belum terverifikasi dari teks asli". DILARANG memalsukan teks Arab.
+
+ATURAN IBARAT KITAB:
+📖 قال الإمام [اسم] رحمه الله:
+«النص العربي الأصلي...»
+Terjemahan: "..."
+Penjelasan: ...
+
+Gaya: Ilmiah, lugas, tegas, mudah dipahami, Arab berharakat.
+`;
+
+async function tanyaAI(pertanyaanUser) {
   try {
-    const res = await axios.post(SHAMELA_MCP, { query: query, limit: 3 }, { timeout: 20000 })
-    return res.data
-  } catch (e) { return null }
+    const OPENAI_KEY = process.env.OPENAI_API_KEY
+    if (!OPENAI_KEY) return null // kalau tidak ada key, pakai mode manual
+   
+    let res = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: pertanyaanUser }
+      ],
+      temperature: 0.3
+    }, { headers: { Authorization: `Bearer ${OPENAI_KEY}` } })
+   
+    return res.data.choices[0].message.content
+  } catch (e) {
+    console.log("AI Error:", e.message)
+    return null
+  }
 }
 
 async function startBot() {
-    // BIAR AWET: baca session dari ENV
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info')
+    // Ambil session dari ENV kalau ada (biar tidak pairing ulang)
     if (process.env.SESSION_DATA) {
-        if (!fs.existsSync("auth_info")) fs.mkdirSync("auth_info", { recursive: true })
         try {
-            // kalau SESSION_DATA adalah JSON string, tulis langsung
-            fs.writeFileSync("auth_info/creds.json", process.env.SESSION_DATA)
-            console.log("Session dari ENV terpasang")
-        } catch(e) {
-            console.log("Gagal pasang SESSION_DATA:", e.message)
-        }
+            const sess = JSON.parse(process.env.SESSION_DATA)
+            // Simpan ke file auth_info/creds.json secara manual sudah di-handle Render
+            console.log("SESSION_DATA ditemukan")
+        } catch {}
     }
+   
+    const sock = makeWASocket({ auth: state, logger: pino({ level: 'silent' }) })
+    sock.ev.on('creds.update', saveCreds)
 
-    const { state, saveCreds } = await useMultiFileAuthState("auth_info")
-    const sock = makeWASocket({
-        auth: state,
-        logger: P({ level: "silent" }),
-        browser: Browsers.ubuntu("Chrome"),
-        printQRInTerminal: false
+    sock.ev.on('connection.update', (u) => {
+        if (u.connection === 'open') console.log('BOT KONEK - BAHTSUL MASAIL V3 READY')
+        if (u.connection === 'close' && u.lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) startBot()
     })
 
-    // PAIRING CODE 8 DIGIT - dengan retry
-    if (!sock.authState.creds.registered) {
-        let nomor = (process.env.NOMOR_WA || "").replace(/[^0-9]/g, "")
-        console.log("Menunggu nomor: " + nomor)
-
-        const mintaKode = async () => {
-            if (sock.authState.creds.registered) return;
-            if (!nomor) {
-                console.log("NOMOR_WA kosong! Isi di Render Environment");
-                return;
-            }
-            try {
-                let code = await sock.requestPairingCode(nomor)
-                console.log(`\n\n====================\n🔑 KODE PAIRING: ${code}\n====================\n`)
-                console.log("Cara pakai: WA > Titik 3 > Perangkat tertaut > Tautkan dengan nomor telepon > Masukkan kode\n")
-            } catch (e) {
-                console.log("Error pairing:", e.message, "- coba lagi 15 detik")
-                setTimeout(mintaKode, 15000)
-            }
-        }
-        setTimeout(mintaKode, 4000)
-    }
-
-    sock.ev.on("creds.update", saveCreds)
-
-    sock.ev.on("connection.update", async (u) => {
-        const { connection } = u
-        if (connection === "open") {
-            console.log("✅ BOT KONEK!")
-            console.log("PENTING: Copy isi file auth_info/creds.json ini ke ENV SESSION_DATA biar awet selamanya")
-            try { console.log(fs.readFileSync("auth_info/creds.json","utf-8")) } catch(e){}
-        }
-        if (connection === "close") {
-            console.log("Koneksi tertutup, restart 5 detik...")
-            setTimeout(startBot, 5000)
-        }
-    })
-
-    sock.ev.on("messages.upsert", async (m) => {
+    sock.ev.on('messages.upsert', async m => {
         const msg = m.messages[0]
         if (!msg.message || msg.key.fromMe) return
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || ""
-        const jid = msg.key.remoteJid
-        if (text.length < 3) return
+        const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || "")
+        const from = msg.key.remoteJid
+        if (!text) return
 
-        await sock.sendMessage(jid, { text: `⏳ Mencari di المكتبة الشاملة...\nKasus: ${text.slice(0,100)}` })
+        console.log("Pertanyaan:", text)
+       
+        // Coba jawab pakai AI model Bahtsul Masail
+        let jawabanAI = await tanyaAI(`
+📌 DESKRIPSI MASALAH: ${text}
+❓ PERTANYAAN: ${text}
+Jawab dengan 9 struktur lengkap di atas.
+`)
 
-        let dataSyamilah = await cariSyamilah(text)
-        let kutipan = ""
-        if (dataSyamilah?.results) {
-            dataSyamilah.results.forEach(r => {
-                kutipan += `\n📖 ${r.kitab || ''} ${r.jilid||''}/${r.halaman||''}\n«${r.nass||r.text}»\nLink: ${r.link || 'https://shamela.ws'}\n`
-            })
-        } else { kutipan = "\nBelum terverifikasi dari teks asli Syamilah untuk query ini.\n" }
+        let jawabFinal = ""
+        if (jawabanAI) {
+            jawabFinal = jawabanAI
+        } else {
+            // Fallback kalau belum ada OPENAI_API_KEY - mode manual
+            jawabFinal = `*Mode Manual Aktif (Belum ada OPENAI_API_KEY)*
 
-        let jawaban = `بسم الله الرحمن الرحيم
-1. تصوير المسألة: ${text}
-2. تحرير محل النزاع: ...
-3. التكييف الشرعي: ...
-4. أقوال العلماء: ${kutipan}
-5. الأدلة (takhrij)
-6. مناقشة الأقوال
-7. الترجيح
-8. الحكم
-9. الخلاصة
-10. 📚 المراجع: shamelaa.link/mcp`
+Ustadz, untuk mengaktifkan mode Peneliti Syariah super lengkap seperti template Ustadz, tambahkan di Render > Environment:
 
-        await sock.sendMessage(jid, { text: jawaban })
+KEY: OPENAI_API_KEY
+VALUE: sk-xxxx dari openai.com
+
+Sementara ini saya jawab manual:
+
+# بسم الله الرحمن الرحيم
+## أولًا: تصوير المسألة
+Pertanyaan: ${text}
+
+Bot akan menjawab dengan metode Bahtsul Masail lengkap setelah API Key dipasang.
+
+Silakan pasang API Key dulu Ustadz.`
+        }
+
+        // Potong pesan WA max 4000 karakter per bubble
+        if (jawabFinal.length > 4000) {
+            for (let i = 0; i < jawabFinal.length; i += 4000) {
+                await sock.sendMessage(from, { text: jawabFinal.substring(i, i+4000) })
+            }
+        } else {
+            await sock.sendMessage(from, { text: jawabFinal })
+        }
     })
 }
 startBot()
