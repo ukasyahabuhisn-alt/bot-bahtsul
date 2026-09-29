@@ -1,4 +1,5 @@
-const { default: makeWASocket, useMultiFileAuthState } = require("@whiskeysockets/baileys")
+require('http').createServer((_,res)=>res.end('Bot Bahtsul Aktif')).listen(process.env.PORT||3000);
+const { default: makeWASocket, useMultiFileAuthState, Browsers } = require("@whiskeysockets/baileys")
 const P = require("pino")
 const fs = require("fs")
 const axios = require("axios")
@@ -15,34 +16,59 @@ async function cariSyamilah(query) {
 async function startBot() {
     // BIAR AWET: baca session dari ENV
     if (process.env.SESSION_DATA) {
-        if (!fs.existsSync("auth_info")) fs.mkdirSync("auth_info")
-        fs.writeFileSync("auth_info/creds.json", process.env.SESSION_DATA)
-        console.log("Session dari ENV terpasang")
+        if (!fs.existsSync("auth_info")) fs.mkdirSync("auth_info", { recursive: true })
+        try {
+            // kalau SESSION_DATA adalah JSON string, tulis langsung
+            fs.writeFileSync("auth_info/creds.json", process.env.SESSION_DATA)
+            console.log("Session dari ENV terpasang")
+        } catch(e) {
+            console.log("Gagal pasang SESSION_DATA:", e.message)
+        }
     }
 
     const { state, saveCreds } = await useMultiFileAuthState("auth_info")
-    const sock = makeWASocket({ auth: state, logger: P({ level: "silent" }) })
+    const sock = makeWASocket({
+        auth: state,
+        logger: P({ level: "silent" }),
+        browser: Browsers.ubuntu("Chrome"),
+        printQRInTerminal: false
+    })
 
-    // PAIRING CODE 8 DIGIT (gratis simpel)
+    // PAIRING CODE 8 DIGIT - dengan retry
     if (!sock.authState.creds.registered) {
-        const nomor = process.env.NOMOR_WA
+        let nomor = (process.env.NOMOR_WA || "").replace(/[^0-9]/g, "")
         console.log("Menunggu nomor: " + nomor)
-        setTimeout(async () => {
+
+        const mintaKode = async () => {
+            if (sock.authState.creds.registered) return;
+            if (!nomor) {
+                console.log("NOMOR_WA kosong! Isi di Render Environment");
+                return;
+            }
             try {
                 let code = await sock.requestPairingCode(nomor)
                 console.log(`\n\n====================\n🔑 KODE PAIRING: ${code}\n====================\n`)
                 console.log("Cara pakai: WA > Titik 3 > Perangkat tertaut > Tautkan dengan nomor telepon > Masukkan kode\n")
-            } catch (e) { console.log("Error pairing, tunggu 10 detik") }
-        }, 4000)
+            } catch (e) {
+                console.log("Error pairing:", e.message, "- coba lagi 15 detik")
+                setTimeout(mintaKode, 15000)
+            }
+        }
+        setTimeout(mintaKode, 4000)
     }
 
     sock.ev.on("creds.update", saveCreds)
 
     sock.ev.on("connection.update", async (u) => {
-        if (u.connection === "open") {
+        const { connection } = u
+        if (connection === "open") {
             console.log("✅ BOT KONEK!")
             console.log("PENTING: Copy isi file auth_info/creds.json ini ke ENV SESSION_DATA biar awet selamanya")
             try { console.log(fs.readFileSync("auth_info/creds.json","utf-8")) } catch(e){}
+        }
+        if (connection === "close") {
+            console.log("Koneksi tertutup, restart 5 detik...")
+            setTimeout(startBot, 5000)
         }
     })
 
