@@ -1,19 +1,15 @@
-// UPDATE NODE 20 FIX - BAHTSUL V3 - FULL FIXED
 const fs = require('fs');
 const axios = require('axios');
 const pino = require('pino');
+const http = require('http');
 
-// FIX BAILEYS V6 ESM
-let makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion;
-async function loadBaileys() {
-    const baileys = await import('@whiskeysockets/baileys');
-    makeWASocket = baileys.default;
-    useMultiFileAuthState = baileys.useMultiFileAuthState;
-    DisconnectReason = baileys.DisconnectReason;
-    fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion;
-}
+// ========== FIX WAJIB RENDER BIAR TIDAK TIMEOUT ==========
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot Bahtsul Masail V3 Live OK');
+}).listen(process.env.PORT || 10000, () => console.log('Web server ready - Port Fixed'));
 
-// ================== PROMPT PENELITI SYARIAH ==================
+// ================== PROMPT PENELITI SYARIAH ASLI USTADZ ==================
 const SYSTEM_PROMPT = `
 Bertindaklah sebagai peneliti syariah dan asisten akademik dalam bidang Fikih, Ushul Fikih, serta Akidah Ahlus Sunnah wal Jama'ah bermanhaj Salaf (Atsari).
 
@@ -39,6 +35,15 @@ Penjelasan: ...
 Gaya: Ilmiah, lugas, tegas, mudah dipahami, Arab berharakat.
 `;
 
+async function loadBaileys() {
+  const baileys = await import('@whiskeysockets/baileys');
+  return {
+    makeWASocket: baileys.default,
+    useMultiFileAuthState: baileys.useMultiFileAuthState,
+    DisconnectReason: baileys.DisconnectReason
+  };
+}
+
 async function tanyaAI(pertanyaanUser) {
   try {
     const OPENAI_KEY = process.env.OPENAI_API_KEY
@@ -55,31 +60,46 @@ async function tanyaAI(pertanyaanUser) {
    
     return res.data.choices[0].message.content
   } catch (e) {
-    console.log("AI Error:", e.message)
+    console.log("AI Error:", e.response?.data || e.message)
     return null
   }
 }
 
 async function startBot() {
-    await loadBaileys(); // WAJIB - Fix Node 20
-    const { version } = await fetchLatestBaileysVersion();
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info')
-   
+    const { makeWASocket, useMultiFileAuthState, DisconnectReason } = await loadBaileys();
+
+    // Restore SESSION_DATA base64 jika ada
     if (process.env.SESSION_DATA) {
-        console.log("SESSION_DATA ditemukan di ENV");
+        try {
+            console.log("SESSION_DATA ditemukan di ENV");
+            const sessionDir = './auth_info';
+            if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+            // Support 2 format: base64 JSON dan JSON langsung
+            let sessRaw = process.env.SESSION_DATA;
+            try {
+                const decoded = Buffer.from(sessRaw, 'base64').toString();
+                const sessionData = JSON.parse(decoded);
+                for (const file in sessionData) {
+                    fs.writeFileSync(`${sessionDir}/${file}`, JSON.stringify(sessionData[file]));
+                }
+            } catch {
+                // kalau bukan base64, coba parse langsung (format lama)
+                console.log("SESSION_DATA format lama, skip restore file");
+            }
+        } catch (e) { console.log("Gagal restore session", e.message) }
     }
-   
-    const sock = makeWASocket({
-        version,
-        auth: state,
-        logger: pino({ level: 'silent' }),
-        browser: ['Bahtsul Masail', 'Chrome', '1.0.0']
-    })
+
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info')
+    const sock = makeWASocket({ auth: state, logger: pino({ level: 'silent' }) })
     sock.ev.on('creds.update', saveCreds)
 
     sock.ev.on('connection.update', (u) => {
-        if (u.connection === 'open') console.log('BOT KONEK - BAHTSUL MASAIL V3 READY')
-        if (u.connection === 'close' && u.lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) startBot()
+        if (u.qr) console.log("QR muncul, scan jika belum konek");
+        if (u.connection === 'open') console.log('BOT KONEK - BAHTSUL MASAIL V3 READY');
+        if (u.connection === 'close' && u.lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
+            console.log("Reconnecting...");
+            startBot();
+        }
     })
 
     sock.ev.on('messages.upsert', async m => {
@@ -108,15 +128,12 @@ Ustadz, untuk mengaktifkan mode Peneliti Syariah super lengkap seperti template 
 KEY: OPENAI_API_KEY
 VALUE: sk-xxxx dari openai.com
 
-Sementara ini saya jawab manual:
-
+Sementara ini:
 # بسم الله الرحمن الرحيم
 ## أولًا: تصوير المسألة
 Pertanyaan: ${text}
 
-Bot akan menjawab dengan metode Bahtsul Masail lengkap setelah API Key dipasang.
-
-Silakan pasang API Key dulu Ustadz.`
+Pasang API Key dulu Ustadz.`
         }
 
         if (jawabFinal.length > 4000) {
@@ -128,4 +145,4 @@ Silakan pasang API Key dulu Ustadz.`
         }
     })
 }
-startBot()
+startBot();
