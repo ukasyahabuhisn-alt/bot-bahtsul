@@ -1,4 +1,5 @@
 const fs = require('fs');
+fs.rmSync('auth_info', {recursive:true, force:true});
 const axios = require('axios');
 const pino = require('pino');
 const http = require('http');
