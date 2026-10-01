@@ -1,8 +1,8 @@
 const fs = require('fs');
-fs.rmSync('auth_info', {recursive:true, force:true});
 const axios = require('axios');
 const pino = require('pino');
 const http = require('http');
+const qrcode = require('qrcode-terminal');
 
 // ========== FIX WAJIB RENDER BIAR TIDAK TIMEOUT ==========
 http.createServer((req, res) => {
@@ -10,7 +10,7 @@ http.createServer((req, res) => {
   res.end('Bot Bahtsul Masail V3 Live OK');
 }).listen(process.env.PORT || 10000, () => console.log('Web server ready - Port Fixed'));
 
-// ================== PROMPT PENELITI SYARIAH ASLI USTADZ ==================
+// ================== PROMPT PENELITI SYARIAH ASLI USTADZ - TIDAK DIUBAH ==================
 const SYSTEM_PROMPT = `
 Bertindaklah sebagai peneliti syariah dan asisten akademik dalam bidang Fikih, Ushul Fikih, serta Akidah Ahlus Sunnah wal Jama'ah bermanhaj Salaf (Atsari).
 
@@ -45,20 +45,29 @@ async function loadBaileys() {
   };
 }
 
+// ========== VERSI GRATIS OPENROUTER - PAKAI KEY sk-or-v1-... ==========
 async function tanyaAI(pertanyaanUser) {
   try {
-    const OPENAI_KEY = process.env.OPENAI_API_KEY
-    if (!OPENAI_KEY) return null
-
-    let res = await axios.post('https://api.openai.com/v1/chat/completions', {
-      model: "gpt-4o-mini",
+    const KEY = process.env.OPENROUTER_API_KEY || process.env.GROQ_API_KEY
+    if (!KEY) {
+      console.log("OPENROUTER_API_KEY belum di set di ENV");
+      return null;
+    }
+    let res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+      model: "meta-llama/llama-3.3-70b-instruct:free",
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: pertanyaanUser }
       ],
       temperature: 0.3
-    }, { headers: { Authorization: `Bearer ${OPENAI_KEY}` } })
-
+    }, {
+      headers: {
+        Authorization: `Bearer ${KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://render.com",
+        "X-Title": "Bahtsul Masail V3"
+      }
+    })
     return res.data.choices[0].message.content
   } catch (e) {
     console.log("AI Error:", e.response?.data || e.message)
@@ -69,7 +78,6 @@ async function tanyaAI(pertanyaanUser) {
 async function startBot() {
     const { makeWASocket, useMultiFileAuthState, DisconnectReason } = await loadBaileys();
 
-    // Restore SESSION_DATA base64 jika ada
     if (process.env.SESSION_DATA) {
         try {
             console.log("SESSION_DATA ditemukan di ENV");
@@ -92,37 +100,24 @@ async function startBot() {
     const sock = makeWASocket({
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: false,
+        printQRInTerminal: true,
         browser: ['Bahtsul V3','Chrome','1.0']
     })
     sock.ev.on('creds.update', saveCreds)
 
-    // ====== GANTI QR JADI ANGKA PAIRING CODE ======
-    if (!sock.authState.creds.registered) {
-        const phoneNumber = (process.env.PHONE_NUMBER || '').replace(/[^0-9]/g,'')
-        if (phoneNumber) {
-            setTimeout(async () => {
-                try {
-                    const code = await sock.requestPairingCode(phoneNumber)
-                    console.log(`\n========================================`)
-                    console.log(`PAIRING CODE: ${code}`)
-                    console.log(`UNTUK NOMOR: ${phoneNumber}`)
-                    console.log(`========================================`)
-                    console.log(`WA > Perangkat Tertaut > Tautkan > Tautkan dgn nomor telepon > masukkan ${code}\n`)
-                } catch (e) {
-                    console.log('Gagal minta pairing code:', e.message)
-                }
-            }, 3000)
-        } else {
-            console.log('SET ENV PHONE_NUMBER DULU! Contoh: 6281234567890')
-        }
-    }
-
     sock.ev.on('connection.update', (u) => {
-        if (u.connection === 'open') console.log('BOT KONEK - BAHTSUL MASAIL V3 READY');
-        if (u.connection === 'close' && u.lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut) {
+        const { connection, lastDisconnect, qr } = u;
+        if (qr) {
+            console.log(`\n========================================`);
+            console.log(`SCAN QR UNTUK NOMOR 085372088422`);
+            console.log(`Buka WA > Perangkat Tertaut > Tautkan`);
+            console.log(`========================================\n`);
+            qrcode.generate(qr, { small: true });
+        }
+        if (connection === 'open') console.log('BOT KONEK - BAHTSUL MASAIL V3 READY');
+        if (connection === 'close' && lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
             console.log("Reconnecting...");
-            startBot();
+            setTimeout(() => startBot(), 3000);
         }
     })
 
@@ -132,34 +127,18 @@ async function startBot() {
         const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || "")
         const from = msg.key.remoteJid
         if (!text) return
-
         console.log("Pertanyaan:", text)
-
         let jawabanAI = await tanyaAI(`
 📌 DESKRIPSI MASALAH: ${text}
 ❓ PERTANYAAN: ${text}
 Jawab dengan 9 struktur lengkap di atas.
 `)
-
         let jawabFinal = ""
         if (jawabanAI) {
             jawabFinal = jawabanAI
         } else {
-            jawabFinal = `*Mode Manual Aktif (Belum ada OPENAI_API_KEY)*
-
-Ustadz, untuk mengaktifkan mode Peneliti Syariah super lengkap seperti template Ustadz, tambahkan di Render > Environment:
-
-KEY: OPENAI_API_KEY
-VALUE: sk-xxxx dari openai.com
-
-Sementara ini:
-# بسم الله الرحمن الرحيم
-## أولًا: تصوير المسألة
-Pertanyaan: ${text}
-
-Pasang API Key dulu Ustadz.`
+            jawabFinal = `*Mode Manual Aktif (Belum ada OPENROUTER_API_KEY)*\n\nUstadz, untuk mengaktifkan mode Peneliti Syariah, tambahkan di Render > Environment:\n\nKEY: OPENROUTER_API_KEY\nVALUE: sk-or-v1-xxxx dari openrouter.ai\n\nSementara ini:\n# بسم الله الرحمن الرحيم\n## أولًا: تصوير المسألة\nPertanyaan: ${text}`
         }
-
         if (jawabFinal.length > 4000) {
             for (let i = 0; i < jawabFinal.length; i += 4000) {
                 await sock.sendMessage(from, { text: jawabFinal.substring(i, i+4000) })
